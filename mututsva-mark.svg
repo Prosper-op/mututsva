@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">Mututsva service station</title>
+  <defs>
+    <linearGradient id="backdrop" x1="12" y1="8" x2="112" y2="122" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0c8377"/>
+      <stop offset=".52" stop-color="#125b69"/>
+      <stop offset="1" stop-color="#102d48"/>
+    </linearGradient>
+    <linearGradient id="cabinet" x1="31" y1="21" x2="84" y2="103" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fff"/>
+      <stop offset="1" stop-color="#dce9e9"/>
+    </linearGradient>
+    <linearGradient id="amber" x1="48" y1="35" x2="67" y2="60" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ffdc83"/>
+      <stop offset="1" stop-color="#ed822d"/>
+    </linearGradient>
+    <filter id="lift" x="17" y="12" width="100" height="109" color-interpolation-filters="sRGB" filterUnits="userSpaceOnUse">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="3"/>
+      <feOffset dy="3"/>
+      <feComponentTransfer><feFuncA type="linear" slope=".22"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="30" fill="url(#backdrop)"/>
+  <rect x="4.75" y="4.75" width="118.5" height="118.5" rx="29.25" fill="none" stroke="#ffffff" stroke-opacity=".14" stroke-width="1.5"/>
+  <path d="M12 91c19-14 39-18 60-12 15 4 27 3 43-7v31H12V91Z" fill="#55b5a0" fill-opacity=".16"/>
+  <g filter="url(#lift)">
+    <path d="M37 20h36a9 9 0 0 1 9 9v63a8 8 0 0 1-8 8H37a8 8 0 0 1-8-8V28a8 8 0 0 1 8-8Z" fill="url(#cabinet)"/>
+    <path d="M37 20h36a9 9 0 0 1 9 9v4H29v-5a8 8 0 0 1 8-8Z" fill="#fff"/>
+    <rect x="37" y="36" width="38" height="32" rx="5" fill="#123e51"/>
+    <path d="M56 41c-6 8-9 12-9 17a9 9 0 0 0 18 0c0-5-3-9-9-17Z" fill="url(#amber)"/>
+    <path d="M55 49c-2 3-3 5-3 7" fill="none" stroke="#fff4d9" stroke-linecap="round" stroke-width="2.2"/>
+    <path d="M39 77h34M39 85h24" stroke="#79a9a7" stroke-linecap="round" stroke-width="4"/>
+    <path d="M82 37h7l13 13v24a7 7 0 0 1-14 0V58l-7-7" fill="none" stroke="#f7fbfa" stroke-linecap="round" stroke-linejoin="round" stroke-width="6"/>
+    <path d="m83 39 8-9 10 10" fill="none" stroke="#ffbd59" stroke-linecap="round" stroke-linejoin="round" stroke-width="4.5"/>
+    <path d="M25 105h72" stroke="#f4a13e" stroke-linecap="round" stroke-width="5"/>
+    <path d="M39 105h12" stroke="#fff" stroke-linecap="round" stroke-width="2"/>
+  </g>
+</svg>

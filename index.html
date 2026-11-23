@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#102d48">
+  <title>Mututsva | Fuel station management</title>
+  <link rel="icon" type="image/svg+xml" href="/mututsva-mark.svg">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#dashboard" aria-label="Mututsva home"><img class="brand-mark" src="/mututsva-mark.svg" alt=""><span><strong>MUTUTSVA</strong><small>FUEL • SERVICE</small></span></a>
+      <div class="station-switch"><span class="station-icon">⌖</span><span><b>Mututsva Station</b><small>Station workspace</small></span><span class="chevron">⌄</span></div>
+      <div class="nav-label">WORKSPACE</div>
+      <nav id="navigation" aria-label="Main navigation">
+        <button class="nav-item active" data-view="dashboard"><span>▦</span>Overview</button>
+        <button class="nav-item" data-view="sales"><span>▤</span>Point of sale</button>
+        <button class="nav-item" data-view="deliveries"><span>⇣</span>Deliveries <i id="delivery-badge"></i></button>
+        <button class="nav-item" data-view="inventory"><span>◫</span>Fuel inventory</button>
+        <button class="nav-item" data-view="shifts"><span>◷</span>Shifts & pumps</button>
+        <button class="nav-item" data-view="reconciliation"><span>⟳</span>Reconciliation</button>
+        <button class="nav-item" data-view="finance"><span>＄</span>Finance</button>
+        <button class="nav-item" data-view="reports"><span>▥</span>Reports</button>
+      </nav>
+      <div class="sidebar-bottom"><div class="nav-label">SYSTEM</div><button class="nav-item" data-view="settings"><span>⚙</span>Station settings</button><div class="user-card"><div class="avatar" id="side-avatar">TM</div><span><b id="side-name">Station user</b><small id="side-role">Role</small></span><button id="user-menu" aria-label="Sign out">↪</button></div></div>
+    </aside>
+    <main class="main-area">
+      <header class="topbar"><div class="crumb"><span id="station-crumb">Mututsva Station</span><span class="crumb-sep">/</span><b id="current-section">Overview</b></div><div class="top-actions"><span class="live-dot"></span><span class="today" id="today"></span><button class="icon-button" id="help-button" aria-label="Help">?</button><div class="avatar small-avatar" id="top-avatar">TM</div></div></header>
+      <section class="page-content" id="page-content" aria-live="polite"></section>
+    </main>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <div id="auth-screen" class="auth-screen" hidden><div class="auth-card"><a class="brand auth-brand" aria-label="Mututsva"><img class="brand-mark" src="/mututsva-mark.svg" alt=""><span><strong>MUTUTSVA</strong><small>FUEL • SERVICE • CONVENIENCE</small></span></a><span class="eyebrow" id="auth-eyebrow">STATION MANAGEMENT</span><h1 id="auth-title">Sign in</h1><p id="auth-copy">Use your station account to continue.</p><form id="auth-form"><div id="auth-fields"></div><div id="auth-error" class="auth-error" role="alert"></div><button id="auth-submit" class="button primary auth-submit">Sign in</button></form><p class="auth-foot">Mututsva FSMS · Secure station workspace</p></div></div>
+  <dialog id="modal"><form method="dialog" id="modal-form"><div class="modal-head"><div><span class="eyebrow" id="modal-eyebrow">NEW RECORD</span><h2 id="modal-title">Add record</h2></div><button class="icon-button close-button" value="cancel" aria-label="Close">×</button></div><div id="modal-body"></div><div class="modal-actions"><button class="button secondary" value="cancel">Cancel</button><button class="button primary" id="modal-submit" value="default">Save record</button></div></form></dialog>
+  <script src="app.js"></script>
+</body>
+</html>
