@@ -123,6 +123,7 @@ dialog::backdrop{background:rgba(9,37,46,.62);backdrop-filter:blur(4px)}
 /* Mututsva logo sizing and lockup */
 .brand{gap:10px}
 .brand-mark{display:block;width:40px;height:40px;flex:none;border-radius:12px;background:transparent;box-shadow:0 5px 16px rgba(7,24,29,.2)}
+.brand-mark.station-brand-logo{object-fit:contain;padding:3px;background:#fff;border-radius:10px;box-shadow:none}
 .brand strong{font-size:16px;line-height:1.1;letter-spacing:1.6px;color:#f5fbf8}
 .brand small{font-size:7.2px;letter-spacing:1.05px;color:#a9c8c2;margin-top:5px;white-space:nowrap}
 .brand small::before{content:"";display:inline-block;width:8px;height:2px;margin-right:5px;vertical-align:middle;border-radius:2px;background:#f3a144}

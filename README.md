@@ -10,7 +10,7 @@ Install Node.js 22 or newer and run from this project folder:
 npm start
 ```
 
-Open http://127.0.0.1:3000. On first launch, create the system administrator using a unique email and a password with at least 12 characters. Add service stations and named staff accounts in Station settings. A new station starts with zero stock; record and approve a delivery before recording sales. A matching pump shift must be open for each sale.
+Open http://127.0.0.1:3000. On first launch, create the system administrator using a unique email and a password with at least 12 characters. Add service stations and named staff accounts in Platform access. Station users manage station settings and operations from their assigned station. A new station starts with zero stock; record and approve a delivery before recording sales. A matching pump shift must be open for each sale.
 
 The local database is `data/mututsva.sqlite`. Set `DB_PATH` to choose a different database file. The frontend and API are served from the same origin, so login cookies and station selection use one host.
 
@@ -27,7 +27,8 @@ For a cloud container host, configure a durable disk mounted at `/data`, route H
 
 ## Included workflows
 
-- System administrator access across stations, station creation, and user account management. Each station has a separate workspace; other roles can access only their assigned station.
+- Platform administrators can create stations and manage user accounts, but cannot view or change station sales, stock, deliveries, shifts, expenses, reports, audit trails, or database backups. Station teams manage their own operations; station roles are limited to their assigned station.
+- Station managers can upload or remove their station's PNG, JPG, or WebP logo (up to 400 KB). It is stored with that station's settings and shown in its signed-in workspace.
 - Six server-enforced roles: System Administrator, Station Manager, Supervisor, Cashier, Fuel Attendant, and Accountant.
 - First administrator setup, sign-in/sign-out, scrypt password hashes, expiring sessions, and HttpOnly SameSite cookies.
 - Fuel products, purchase orders with manager approval, supplier deliveries linked to those orders, physical tank dips, reviewed stock adjustments, and a stock movement ledger.
@@ -39,3 +40,17 @@ For a cloud container host, configure a durable disk mounted at `/data`, route H
 ## Operational limits
 
 This is an early release, not a production-certified system. Each station currently models one storage tank per fuel product; it has no employee registry separate from user accounts, configurable pump/nozzle registry, automated dispenser integration, receipt printing, PDF reports, password reset/recovery, or backup restore interface. It does not provide a full double-entry accounting ledger; reconcile sales, collections, expenses, refunds, supplier balances, and profit with the station's accounting procedures. Check role access and operating calculations against real procedures before relying on the system. Production hosting needs HTTPS, restricted database access, monitoring, backup retention, and a rehearsed restore process.
+# Railway deployment (free trial)
+
+The repository includes `railway.json` and a Dockerfile-based deployment configuration.
+
+1. Create a Railway project from the `Prosper-op/mututsva` GitHub repository.
+2. Deploy the service using the repository's Dockerfile.
+3. In the service settings, add a volume mounted at `/data`. The SQLite database is stored at `/data/mututsva.sqlite`; without this volume, database changes can be lost when the container is replaced.
+4. Generate a Railway public domain for the service. Railway routes traffic to the app's `PORT` environment variable.
+5. Open the public URL and complete the one-time setup to create the first System Administrator. Use a unique strong password and keep it private.
+
+The app automatically sets `HOST=0.0.0.0` and `DB_PATH=/data/mututsva.sqlite` in the Dockerfile. Do not add an administrator password to Railway variables or source control. Back up important records regularly using the in-app administrator backup.
+
+Railway's Free plan has a small monthly usage allowance and sleeps when idle. The first visit after idle can be delayed, and the service can stop after exhausting that allowance. Confirm the current plan limits in Railway before relying on this deployment for live station operations.
+
