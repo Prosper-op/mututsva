@@ -150,3 +150,8 @@ dialog::backdrop{background:rgba(9,37,46,.62);backdrop-filter:blur(4px)}
 .stat-card:nth-child(4n)::before{background:linear-gradient(90deg,#ba633d,#eea164)}
 .auth-card::before{background:linear-gradient(90deg,#087d78 0%,#3fa89a 48%,#f3a144 100%)}
 .auth-brand .brand-mark{box-shadow:0 8px 22px rgba(16,63,69,.22)}
+.station-switch{gap:9px;min-width:0}
+#station-picker{min-width:0;width:100%;padding:7px 22px 7px 8px;border:1px solid #496578;border-radius:6px;background:#173c4b;color:#f3f8f6;font:600 10px 'DM Sans',sans-serif}
+#station-picker:focus-visible{outline:2px solid #efae51;outline-offset:2px}
+#station-picker[hidden]{display:none}
+@media(max-width:760px){#station-picker{font-size:0;width:40px;padding:7px 3px}.station-switch{justify-content:center}}

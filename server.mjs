@@ -1,24 +1,48 @@
 import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
-import { resolve, extname, join } from 'node:path';
+import { resolve, extname, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, scrypt as scryptCallback, timingSafeEqual, createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const dataDir = join(root, 'data');
 await mkdir(dataDir, { recursive: true });
-const db = new DatabaseSync(join(dataDir, 'mututsva.sqlite'));
+const databasePath=process.env.DB_PATH||join(dataDir,'mututsva.sqlite');
+await mkdir(dirname(databasePath),{recursive:true});
+const db = new DatabaseSync(databasePath);
 db.exec(`PRAGMA journal_mode = WAL;
   PRAGMA foreign_keys = ON;
-  CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, role TEXT NOT NULL, salt TEXT NOT NULL, password_hash TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS stations (id TEXT PRIMARY KEY, name TEXT NOT NULL, currency TEXT NOT NULL DEFAULT 'USD', tolerance REAL NOT NULL DEFAULT 150, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, role TEXT NOT NULL, salt TEXT NOT NULL, password_hash TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, station_id TEXT REFERENCES stations(id));
   CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, expires_at INTEGER NOT NULL);
   CREATE TABLE IF NOT EXISTS records (collection TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(collection,id));
-  CREATE TABLE IF NOT EXISTS audit (seq INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, user_name TEXT NOT NULL, event TEXT NOT NULL, created_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS audit (seq INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT, user_name TEXT NOT NULL, event TEXT NOT NULL, created_at TEXT NOT NULL, station_id TEXT);
   CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
 `);
+const stationContext = new AsyncLocalStorage();
+const hasColumn = (table, column) => db.prepare(`PRAGMA table_info(${table})`).all().some(row => row.name === column);
+if (!hasColumn('users', 'station_id')) db.exec('ALTER TABLE users ADD COLUMN station_id TEXT REFERENCES stations(id)');
+if (!hasColumn('audit', 'station_id')) db.exec('ALTER TABLE audit ADD COLUMN station_id TEXT');
+const legacySettings = db.prepare("SELECT data FROM records WHERE collection='settings' AND id='station'").get();
+let firstStation = db.prepare('SELECT * FROM stations ORDER BY created_at,id LIMIT 1').get();
+if (!firstStation) {
+  const old = legacySettings ? JSON.parse(legacySettings.data) : {};
+  firstStation = { id: 'STN-MAIN', name: old.station || 'Mututsva Station', currency: old.currency || 'USD', tolerance: old.tolerance || 150, active: 1, created_at: new Date().toISOString() };
+  db.prepare('INSERT INTO stations(id,name,currency,tolerance,active,created_at) VALUES(?,?,?,?,?,?)').run(firstStation.id, firstStation.name, firstStation.currency, firstStation.tolerance, firstStation.active, firstStation.created_at);
+}
+if (!hasColumn('records', 'station_id')) {
+  db.exec('ALTER TABLE records RENAME TO records_legacy; CREATE TABLE records (station_id TEXT NOT NULL REFERENCES stations(id), collection TEXT NOT NULL, id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(station_id,collection,id));');
+  db.prepare('INSERT INTO records(station_id,collection,id,data) SELECT ?,collection,id,data FROM records_legacy').run(firstStation.id);
+  db.exec('DROP TABLE records_legacy');
+}
+db.prepare("UPDATE users SET station_id=? WHERE station_id IS NULL AND role<>'System Administrator'").run(firstStation.id);
+db.prepare('UPDATE audit SET station_id=? WHERE station_id IS NULL').run(firstStation.id);
+db.exec('CREATE INDEX IF NOT EXISTS users_station ON users(station_id); CREATE INDEX IF NOT EXISTS audit_station ON audit(station_id,seq);');
+const currentStationId = () => stationContext.getStore() || firstStation.id;
 const roles = ['System Administrator','Station Manager','Supervisor','Cashier','Fuel Attendant','Accountant'];
 const permissions = {
   sale:['System Administrator','Station Manager','Cashier'],
@@ -41,17 +65,16 @@ const json = (res,status,body,headers={}) => {res.writeHead(status,{'Content-Typ
 const parseCookies = header => Object.fromEntries((header||'').split(';').map(part=>part.trim().split('=').map(decodeURIComponent)).filter(pair=>pair.length===2));
 const getBody = req => new Promise((resolveBody,reject)=>{let raw='',size=0;req.on('data',chunk=>{size+=chunk.length;if(size>1_000_000){reject(new Error('Request too large'));req.destroy();return}raw+=chunk});req.on('end',()=>{try{resolveBody(raw?JSON.parse(raw):{})}catch{reject(new Error('Invalid JSON body'))}});req.on('error',reject)});
 const newId = prefix => `${prefix}-${randomBytes(4).toString('hex').toUpperCase()}`;
-const insertRecord = db.prepare('INSERT INTO records(collection,id,data) VALUES(?,?,?)');
-const updateRecord = db.prepare('UPDATE records SET data=? WHERE collection=? AND id=?');
-const readRecord = db.prepare('SELECT data FROM records WHERE collection=? AND id=?');
-const allRecords = db.prepare('SELECT id,data FROM records WHERE collection=?');
-const delRecord = db.prepare('DELETE FROM records WHERE collection=? AND id=?');
-function put(collection,record){const exists=readRecord.get(collection,record.id);if(exists)updateRecord.run(JSON.stringify(record),collection,record.id);else insertRecord.run(collection,record.id,JSON.stringify(record));}
-function get(collection,id){const row=readRecord.get(collection,id);return row?JSON.parse(row.data):null;}
-function list(collection){return allRecords.all(collection).map(row=>JSON.parse(row.data));}
-function audit(user,event){db.prepare('INSERT INTO audit(user_id,user_name,event,created_at) VALUES(?,?,?,?)').run(user?.id||null,user?.name||'System',event,new Date().toISOString());}
-function getState(user){const role=user?.role;const isAttendant=role==='Fuel Attendant';const sales=list('sales');const state={settings:get('settings','station')||{id:'station',station:'Mututsva Station',currency:'USD',tolerance:150},fuel:list('fuel'),suppliers:list('suppliers').map(s=>s.name),purchaseOrders:list('purchaseOrders'),deliveries:list('deliveries'),measurements:list('measurements'),sales,customers:list('customers'),repayments:list('repayments'),stockLedger:list('stockLedger'),saleReversals:list('saleReversals'),shifts:list('shifts').map(s=>({...s,sales:isAttendant?[]:sales.filter(x=>x.shiftId===s.id)})),expenses:list('expenses'),adjustments:list('adjustments'),audit:db.prepare('SELECT event AS text,created_at AS time,user_name AS user FROM audit ORDER BY seq DESC LIMIT 30').all().map(a=>({...a,time:new Date(a.time).toLocaleString()})),users:role==='System Administrator'?db.prepare('SELECT id,name,email,role,active,created_at FROM users ORDER BY name').all():undefined,me:user?{id:user.id,name:user.name,email:user.email,role:user.role}:null};if(role==='Cashier'){state.purchaseOrders=[];state.deliveries=[];state.measurements=[];state.shifts=[];state.expenses=[];state.adjustments=[];state.audit=[]}else if(isAttendant){state.purchaseOrders=[];state.deliveries=[];state.measurements=[];state.sales=[];state.expenses=[];state.adjustments=[];state.audit=[]}else if(role==='Accountant'){state.measurements=[];state.shifts=[];state.adjustments=[];state.audit=[]}else if(role==='Supervisor'){state.expenses=[];state.customers=[];state.repayments=[];state.stockLedger=[]}else if(isAttendant){state.customers=[];state.repayments=[];state.stockLedger=[]}if(role==='Cashier')state.stockLedger=[];return state;}
-function seedBase(){if(get('settings','station'))return;put('settings',{id:'station',station:'Mututsva Station',currency:'USD',tolerance:150});[
+const insertRecord = db.prepare('INSERT INTO records(station_id,collection,id,data) VALUES(?,?,?,?)');
+const updateRecord = db.prepare('UPDATE records SET data=? WHERE station_id=? AND collection=? AND id=?');
+const readRecord = db.prepare('SELECT data FROM records WHERE station_id=? AND collection=? AND id=?');
+const allRecords = db.prepare('SELECT id,data FROM records WHERE station_id=? AND collection=?');
+function put(collection,record){const stationId=currentStationId(),exists=readRecord.get(stationId,collection,record.id);if(exists)updateRecord.run(JSON.stringify(record),stationId,collection,record.id);else insertRecord.run(stationId,collection,record.id,JSON.stringify(record));}
+function get(collection,id){const row=readRecord.get(currentStationId(),collection,id);return row?JSON.parse(row.data):null;}
+function list(collection){return allRecords.all(currentStationId(),collection).map(row=>JSON.parse(row.data));}
+function audit(user,event,stationId=currentStationId()){db.prepare('INSERT INTO audit(user_id,user_name,event,created_at,station_id) VALUES(?,?,?,?,?)').run(user?.id||null,user?.name||'System',event,new Date().toISOString(),stationId);}
+function getState(user){const role=user?.role;const isAttendant=role==='Fuel Attendant';const stationId=currentStationId();const station=db.prepare('SELECT * FROM stations WHERE id=?').get(stationId);const settings=get('settings','station')||{id:'station',station:station?.name||'Mututsva Station',currency:station?.currency||'USD',tolerance:station?.tolerance||150};const sales=list('sales');const state={settings,selectedStationId:stationId,stations:role==='System Administrator'?db.prepare('SELECT id,name,currency,tolerance,active,created_at FROM stations ORDER BY name').all():undefined,fuel:list('fuel'),suppliers:list('suppliers').map(s=>s.name),purchaseOrders:list('purchaseOrders'),deliveries:list('deliveries'),measurements:list('measurements'),sales,customers:list('customers'),repayments:list('repayments'),stockLedger:list('stockLedger'),saleReversals:list('saleReversals'),shifts:list('shifts').map(s=>({...s,sales:isAttendant?[]:sales.filter(x=>x.shiftId===s.id)})),expenses:list('expenses'),adjustments:list('adjustments'),audit:db.prepare('SELECT event AS text,created_at AS time,user_name AS user FROM audit WHERE station_id=? ORDER BY seq DESC LIMIT 30').all(stationId).map(a=>({...a,time:new Date(a.time).toLocaleString()})),users:role==='System Administrator'?db.prepare('SELECT u.id,u.name,u.email,u.role,u.active,u.created_at,u.station_id,st.name AS station_name FROM users u LEFT JOIN stations st ON st.id=u.station_id ORDER BY u.name').all():undefined,me:user?{id:user.id,name:user.name,email:user.email,role:user.role,stationId:user.station_id||null}:null};if(role==='Cashier'){state.purchaseOrders=[];state.deliveries=[];state.measurements=[];state.shifts=[];state.expenses=[];state.adjustments=[];state.audit=[]}else if(isAttendant){state.purchaseOrders=[];state.deliveries=[];state.measurements=[];state.sales=[];state.expenses=[];state.adjustments=[];state.audit=[]}else if(role==='Accountant'){state.measurements=[];state.shifts=[];state.adjustments=[];state.audit=[]}else if(role==='Supervisor'){state.expenses=[];state.customers=[];state.repayments=[];state.stockLedger=[]}if(role==='Cashier')state.stockLedger=[];return state;}
+function seedBase(){if(get('settings','station'))return;const station=db.prepare('SELECT * FROM stations WHERE id=?').get(currentStationId());put('settings',{id:'station',station:station?.name||'Mututsva Station',currency:station?.currency||'USD',tolerance:station?.tolerance||150});[
   {id:'petrol',name:'Petrol',price:1.48,stock:0,capacity:20000,color:'#4b966b'},
   {id:'diesel',name:'Diesel',price:1.52,stock:0,capacity:15000,color:'#d1a04a'},
   {id:'blend',name:'Blend',price:1.42,stock:0,capacity:8000,color:'#7398a0'}
@@ -66,7 +89,7 @@ const localDate=()=>new Intl.DateTimeFormat('en-CA',{timeZone:process.env.STATIO
 const atomic = fn => {db.exec('BEGIN IMMEDIATE');try{const result=fn();db.exec('COMMIT');return result}catch(error){db.exec('ROLLBACK');throw error}};
 const loginFailures=new Map();
 function stockChange(fuelId,delta,{kind,reference,user}={}){const fuel=get('fuel',fuelId);if(!fuel)fail(404,'Fuel product was not found.');const before=fuel.stock,next=before+delta;if(next<0)fail(409,'Calculated stock cannot become negative.');if(next>fuel.capacity)fail(409,'The transaction would exceed tank capacity.');fuel.stock=next;put('fuel',fuel);put('stockLedger',{id:newId('ST'),fuel:fuelId,kind,reference,delta,before,after:next,recordedBy:user?.name||'System',recordedAt:new Date().toISOString()});}
-async function action(user,body){const type=assertText(body.type,'Action type',40);if(type==='user'){assertRole(user,'user');const name=assertText(body.name,'Name',100),email=assertText(body.email,'Email',200).toLowerCase(),role=assertText(body.role,'Role',60),password=String(body.password||'');if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))fail(400,'Enter a valid email address.');if(!roles.includes(role))fail(400,'Choose a supported role.');if(password.length<12)fail(400,'Password must contain at least 12 characters.');const salt=randomBytes(16).toString('hex'),id=newId('USR'),hash=(await scrypt(password,salt,64)).toString('hex');try{db.prepare('INSERT INTO users(id,name,email,role,salt,password_hash,created_at) VALUES(?,?,?,?,?,?,?)').run(id,name,email,role,salt,hash,new Date().toISOString())}catch(e){if(String(e.message).includes('UNIQUE'))fail(409,'That email address already has an account.');throw e}audit(user,`User account created · ${email} · ${role}`);return getState(user)}return atomic(()=>{
+async function action(user,body){const type=assertText(body.type,'Action type',40);if(type==='station'){assertRole(user,'user');const name=assertText(body.name,'Service station name',100),currency=assertText(body.currency||'USD','Currency',3).toUpperCase();if(!/^[A-Z]{3}$/.test(currency))fail(400,'Currency must be a three-letter code.');if(db.prepare('SELECT 1 FROM stations WHERE lower(name)=lower(?)').get(name))fail(409,'A station with this name already exists.');const station={id:newId('STN'),name,currency,tolerance:num(body.tolerance??150,'Tank variance tolerance',{max:100000}),active:1,created_at:new Date().toISOString()};db.prepare('INSERT INTO stations(id,name,currency,tolerance,active,created_at) VALUES(?,?,?,?,?,?)').run(station.id,station.name,station.currency,station.tolerance,station.active,station.created_at);stationContext.run(station.id,()=>seedBase());audit(user,`Service station added · ${name}`,station.id);return stationContext.run(station.id,()=>getState(user));}if(type==='user'){assertRole(user,'user');const name=assertText(body.name,'Name',100),email=assertText(body.email,'Email',200).toLowerCase(),role=assertText(body.role,'Role',60),password=String(body.password||'');if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))fail(400,'Enter a valid email address.');if(!roles.includes(role))fail(400,'Choose a supported role.');if(password.length<12)fail(400,'Password must contain at least 12 characters.');const stationId=role==='System Administrator'?null:assertText(body.stationId||currentStationId(),'Service station');if(stationId&&!db.prepare('SELECT 1 FROM stations WHERE id=? AND active=1').get(stationId))fail(400,'Choose an active service station for this account.');const salt=randomBytes(16).toString('hex'),id=newId('USR'),hash=(await scrypt(password,salt,64)).toString('hex');try{db.prepare('INSERT INTO users(id,name,email,role,salt,password_hash,created_at,station_id) VALUES(?,?,?,?,?,?,?,?)').run(id,name,email,role,salt,hash,new Date().toISOString(),stationId)}catch(e){if(String(e.message).includes('UNIQUE'))fail(409,'That email address already has an account.');throw e}audit(user,`User account created · ${email} · ${role}`);return getState(user)}return atomic(()=>{
   if(type==='purchaseOrder'){
     assertRole(user,'delivery');const supplier=assertText(body.supplier,'Supplier');if(!list('suppliers').some(s=>s.name===supplier))fail(400,'Choose a configured supplier.');const f=get('fuel',assertText(body.fuel,'Fuel product'));if(!f)fail(404,'Fuel product was not found.');put('purchaseOrders',{id:newId('PO'),supplier,fuel:f.id,quantity:num(body.quantity,'Ordered quantity',{min:.1,max:f.capacity}),cost:num(body.cost,'Agreed purchase price',{min:.01,max:10000}),date:assertText(body.date,'Order date',20),reference:String(body.reference||'').slice(0,120),notes:String(body.notes||'').slice(0,500),status:'Pending approval',received:0,requestedBy:user.name,createdAt:new Date().toISOString()});audit(user,`Purchase order requested ? ${supplier} ? ${f.name}`);
   }else if(type==='purchaseOrderReview'){
@@ -104,7 +127,7 @@ async function action(user,body){const type=assertText(body.type,'Action type',4
   }else if(type==='supplier'){
     assertRole(user,'configure');const name=assertText(body.name,'Supplier',100);if(list('suppliers').some(x=>x.name.toLowerCase()===name.toLowerCase()))fail(409,'Supplier already exists.');put('suppliers',{id:newId('SUP'),name});audit(user,`Supplier added · ${name}`);
   }else if(type==='settings'){
-    assertRole(user,'configure');const s=get('settings','station');s.station=assertText(body.station,'Station name',100);s.currency=assertText(body.currency,'Currency',3).toUpperCase();if(!/^[A-Z]{3}$/.test(s.currency))fail(400,'Currency must be a three-letter code.');s.tolerance=num(body.tolerance,'Tank variance tolerance',{max:100000});put('settings',s);audit(user,'Station settings updated');
+    assertRole(user,'configure');const s=get('settings','station');s.station=assertText(body.station,'Station name',100);s.currency=assertText(body.currency,'Currency',3).toUpperCase();if(!/^[A-Z]{3}$/.test(s.currency))fail(400,'Currency must be a three-letter code.');s.tolerance=num(body.tolerance,'Tank variance tolerance',{max:100000});put('settings',s);db.prepare('UPDATE stations SET name=?,currency=?,tolerance=? WHERE id=?').run(s.station,s.currency,s.tolerance,currentStationId());audit(user,'Station settings updated');
   }else if(type==='userStatus'){
     assertRole(user,'user');const id=assertText(body.id,'User');if(id===user.id)fail(400,'You cannot deactivate your own account.');const target=db.prepare('SELECT id,active FROM users WHERE id=?').get(id);if(!target)fail(404,'User not found.');db.prepare('UPDATE users SET active=? WHERE id=?').run(body.active?1:0,id);audit(user,`User account ${body.active?'activated':'deactivated'} · ${id}`);
   }else fail(400,'Unknown action.');
@@ -113,25 +136,33 @@ async function action(user,body){const type=assertText(body.type,'Action type',4
 function fuelName(id){return get('fuel',id)?.name||id;}
 async function route(req,res){
   const url=new URL(req.url,'http://localhost');const path=url.pathname;
+  if(req.method==='GET'&&path==='/healthz'){json(res,200,{status:'ok'});return;}
   if(path.startsWith('/api/')){
     if(req.method==='POST'&&req.headers.origin&&new URL(req.headers.origin).host!==req.headers.host)fail(403,'Cross-origin requests are not allowed.');
     if(req.method==='POST'&&req.headers['sec-fetch-site']==='cross-site')fail(403,'Cross-origin requests are not allowed.');
     let body={};if(req.method==='POST'||req.method==='PUT')body=await getBody(req);
     const cookies=parseCookies(req.headers.cookie),token=cookies.mututsva_session;
     const session=token&&db.prepare('SELECT user_id FROM sessions WHERE token_hash=? AND expires_at>?').get(createHash('sha256').update(token).digest('hex'),Date.now());
-    const user=session&&db.prepare('SELECT id,name,email,role FROM users WHERE id=? AND active=1').get(session.user_id);
+    const user=session&&db.prepare('SELECT id,name,email,role,station_id FROM users WHERE id=? AND active=1').get(session.user_id);
+    const requestedStation=url.searchParams.get('stationId');
+    const stationId=user?.role==='System Administrator'
+      ? (requestedStation||db.prepare('SELECT id FROM stations WHERE active=1 ORDER BY name LIMIT 1').get()?.id)
+      : (user?.station_id||firstStation.id);
+    if(user&&!db.prepare('SELECT 1 FROM stations WHERE id=? AND active=1').get(stationId))fail(403,'This account does not have access to the selected service station.');
+    return stationContext.run(stationId||firstStation.id,async()=>{
     if(req.method==='GET'&&path==='/api/backup'){if(!user||user.role!=='System Administrator')fail(403,'Only the system administrator can create database backups.');const backupDir=join(dataDir,'backups');await mkdir(backupDir,{recursive:true});const filename=`mututsva-${new Date().toISOString().replace(/[:.]/g,'-')}.sqlite`;const destination=join(backupDir,filename);db.exec(`VACUUM INTO '${destination.replace(/'/g,"''")}'`);res.writeHead(200,{'Content-Type':'application/vnd.sqlite3','Content-Disposition':`attachment; filename="${filename}"`,'Cache-Control':'no-store'});createReadStream(destination).pipe(res);return;}
     if(req.method==='GET'&&path==='/api/setup-status'){json(res,200,{needsSetup:db.prepare('SELECT COUNT(*) AS n FROM users').get().n===0});return;}
     if(req.method==='POST'&&path==='/api/setup'){
       if(db.prepare('SELECT COUNT(*) AS n FROM users').get().n!==0)fail(409,'Initial setup has already been completed.');const name=assertText(body.name,'Name',100),email=assertText(body.email,'Email',200).toLowerCase(),password=String(body.password||'');if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))fail(400,'Enter a valid email address.');if(password.length<12)fail(400,'Password must contain at least 12 characters.');const salt=randomBytes(16).toString('hex'),id=newId('USR'),hash=(await scrypt(password,salt,64)).toString('hex');if(db.prepare('SELECT COUNT(*) AS n FROM users').get().n!==0)fail(409,'Initial setup has already been completed.');db.prepare('INSERT INTO users(id,name,email,role,salt,password_hash,created_at) VALUES(?,?,?,?,?,?,?)').run(id,name,email,'System Administrator',salt,hash,new Date().toISOString());const admin={id,name,email,role:'System Administrator'};audit(admin,'Initial system administrator configured');json(res,201,{state:getState(admin)}, { 'Set-Cookie':sessionCookie(await createSession(id)) });return;
     }
     if(req.method==='POST'&&path==='/api/login'){
-      const email=String(body.email||'').toLowerCase(),key=`${req.socket.remoteAddress}:${email}`,attempt=loginFailures.get(key);if(attempt&&attempt.until>Date.now())fail(429,'Too many attempts. Wait 15 minutes before trying again.');const row=db.prepare('SELECT * FROM users WHERE email=? AND active=1').get(email);if(!row){loginFailures.set(key,{count:(attempt?.count||0)+1,until:Date.now()+15*60*1000});fail(401,'Email or password is incorrect.')}const hash=(await scrypt(String(body.password||''),row.salt,64)).toString('hex');if(!timingSafeEqual(Buffer.from(hash,'hex'),Buffer.from(row.password_hash,'hex'))){const count=(attempt?.count||0)+1;loginFailures.set(key,{count,until:Date.now()+(count>=5?15*60*1000:0)});fail(401,'Email or password is incorrect.')}loginFailures.delete(key);db.prepare('DELETE FROM sessions WHERE user_id=?').run(row.id);json(res,200,{state:getState(row)}, {'Set-Cookie':sessionCookie(await createSession(row.id))});return;
+      const email=String(body.email||'').toLowerCase(),key=`${req.socket.remoteAddress}:${email}`,attempt=loginFailures.get(key);if(attempt&&attempt.until>Date.now())fail(429,'Too many attempts. Wait 15 minutes before trying again.');const row=db.prepare('SELECT * FROM users WHERE email=? AND active=1').get(email);if(!row){loginFailures.set(key,{count:(attempt?.count||0)+1,until:Date.now()+15*60*1000});fail(401,'Email or password is incorrect.')}const hash=(await scrypt(String(body.password||''),row.salt,64)).toString('hex');if(!timingSafeEqual(Buffer.from(hash,'hex'),Buffer.from(row.password_hash,'hex'))){const count=(attempt?.count||0)+1;loginFailures.set(key,{count,until:Date.now()+(count>=5?15*60*1000:0)});fail(401,'Email or password is incorrect.')}loginFailures.delete(key);db.prepare('DELETE FROM sessions WHERE user_id=?').run(row.id);const state=stationContext.run(row.station_id||firstStation.id,()=>getState(row));json(res,200,{state}, {'Set-Cookie':sessionCookie(await createSession(row.id))});return;
     }
     if(req.method==='POST'&&path==='/api/logout'){if(token)db.prepare('DELETE FROM sessions WHERE token_hash=?').run(createHash('sha256').update(token).digest('hex'));json(res,200,{ok:true},{'Set-Cookie':'mututsva_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'});return;}
     if(req.method==='GET'&&path==='/api/state'){if(!user)fail(401,'Please sign in to continue.');json(res,200,{state:getState(user)});return;}
     if(req.method==='POST'&&path==='/api/action'){if(!user)fail(401,'Please sign in to continue.');json(res,200,{state:await action(user,body)});return;}
     fail(404,'API route not found.');
+    });
   }
   if(path==='/'||path==='/index.html'){res.writeHead(200,{'Content-Type':'text/html; charset=utf-8'});createReadStream(join(root,'index.html')).pipe(res);return;}
   if(['/app.js','/styles.css','/mututsva-mark.svg'].includes(path)){const types={'.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml'};res.writeHead(200,{'Content-Type':types[extname(path)]});createReadStream(join(root,path.slice(1))).pipe(res);return;}

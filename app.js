@@ -1,4 +1,5 @@
 /* Mututsva FSMS client for the shared SQLite station application. */
+let selectedStationId=sessionStorage.getItem('mututsva-station-id')||'';
 const STORE_KEY = 'mututsva-fsms-v1';
 let currencyCode='USD';
 const currency={format(value){try{return new Intl.NumberFormat('en-US',{style:'currency',currency:currencyCode,maximumFractionDigits:2}).format(value)}catch{return `${currencyCode} ${Number(value).toFixed(2)}`}}};
@@ -96,3 +97,40 @@ $('#navigation').addEventListener('click',()=>{});$('#today').textContent=new Da
 
 document.addEventListener('click',async e=>{const action=e.target.closest('[data-action]');if(action){const {action:act,id}=action.dataset;if(act==='edit-station')editStation();else if(act==='edit-fuel')editFuel(id);else if(act==='add-supplier')addSupplier();else if(act==='new-user')createUser();else if(act==='toggle-user')toggleUser(id,action.dataset.active);return}if(e.target.closest('#user-menu')){try{await api('/api/logout',{method:'POST',body:'{}'})}catch{}state=null;currentUser=null;currentView='dashboard';showAuth(false)}});
 boot();
+
+// Multi-station administration: station context is sent on every authenticated API request.
+async function api(path,options={}){
+  const url=new URL(path,location.origin);
+  const stationAware=url.pathname==='/api/state'||url.pathname==='/api/action'||url.pathname==='/api/backup';
+  if(stationAware&&selectedStationId)url.searchParams.set('stationId',selectedStationId);
+  const response=await fetch(`${url.pathname}${url.search}`,{...options,headers:{'Content-Type':'application/json',...(options.headers||{})},credentials:'same-origin'});
+  let data={};try{data=await response.json()}catch{}
+  if(!response.ok&&response.status===403&&url.searchParams.has('stationId')){selectedStationId='';sessionStorage.removeItem('mututsva-station-id');return api(path,options)}
+  if(!response.ok)throw new Error(data.error||'The request could not be completed.');return data;
+}
+function acceptState(next){
+  state=next;currentUser=next.me;currencyCode=next.settings.currency||'USD';
+  selectedStationId=next.selectedStationId||selectedStationId;if(selectedStationId)sessionStorage.setItem('mututsva-station-id',selectedStationId);
+  const initials=currentUser.name.split(/\s+/).map(x=>x[0]).slice(0,2).join('').toUpperCase();
+  $('#side-name').textContent=currentUser.name;$('#side-role').textContent=currentUser.role;$('#side-avatar').textContent=initials;$('#top-avatar').textContent=initials;
+  $('#station-crumb').textContent=next.settings.station;$('#station-name').textContent=next.settings.station;
+  const picker=$('#station-picker'),isAdmin=currentUser.role==='System Administrator';picker.hidden=!isAdmin;
+  if(isAdmin){picker.innerHTML=(next.stations||[]).map(s=>`<option value="${esc(s.id)}">${esc(s.name)}${s.active?'':' · Inactive'}</option>`).join('');picker.value=selectedStationId;}
+  $('#auth-screen').hidden=true;render();
+}
+function settingsManagement(){
+  const admin=currentUser.role==='System Administrator';
+  const backupControl=admin?'<section class="panel" style="margin-top:15px"><div class="panel-head"><div><h2>Database backup</h2><p>Download a consistent SQLite snapshot of all station records.</p></div><a class="button secondary" href="/api/backup">Download backup</a></div></section>':'';
+  const fuelRows=state.fuel.map(f=>`<tr><td class="primary-cell">${esc(f.name)}</td><td>${currency.format(f.price)} / L</td><td>${number.format(f.stock)} / ${number.format(f.capacity)} L</td><td><button class="inline-action" data-action="edit-fuel" data-id="${f.id}">Edit product</button></td></tr>`).join('');
+  const suppliers=state.suppliers.map(x=>`<span class="status approved">${esc(x)}</span>`).join(' ');
+  const stations=admin?`<section class="panel table-panel" style="margin-top:15px"><div class="panel-head"><div><h2>Service stations</h2><p>Switch stations using the selector in the left panel. Each station has separate stock, sales, staff activity, and reports.</p></div><button class="button primary" data-action="new-station">+ Add service station</button></div><div class="table-wrap"><table><thead><tr><th>Station</th><th>Currency</th><th>Status</th></tr></thead><tbody>${(state.stations||[]).map(s=>`<tr><td class="primary-cell">${esc(s.name)}</td><td>${esc(s.currency)}</td><td>${status(s.active?'Active':'Inactive')}</td></tr>`).join('')}</tbody></table></div></section>`:'';
+  const users=admin?`<section class="panel table-panel" style="margin-top:15px"><div class="panel-head"><div><h2>User accounts</h2><p>System administrators can view accounts across stations and open each station’s records.</p></div><button class="button primary" data-action="new-user">+ Add user</button></div><div class="table-wrap"><table><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Service station</th><th>Status</th><th></th></tr></thead><tbody>${(state.users||[]).map(u=>`<tr><td class="primary-cell">${esc(u.name)}</td><td>${esc(u.email)}</td><td>${esc(u.role)}</td><td>${esc(u.station_name||'All stations')}</td><td>${status(u.active?'Active':'Inactive')}</td><td>${u.id===currentUser.id?'Current account':`<button class="inline-action" data-action="toggle-user" data-id="${u.id}" data-active="${u.active?'0':'1'}">${u.active?'Deactivate':'Activate'}</button>`}</td></tr>`).join('')}</tbody></table></div></section>`:'';
+  return `<section class="panel"><div class="panel-head"><div><h2>Station configuration</h2><p>Station identity, currency, and variance threshold</p></div><button class="button secondary" data-action="edit-station">Edit settings</button></div></section>${stations}<section class="panel table-panel" style="margin-top:15px"><div class="panel-head"><div><h2>Fuel products and prices</h2><p>Price changes affect new sales; previous transactions keep their saved price.</p></div></div><div class="table-wrap"><table><thead><tr><th>Product</th><th>Selling price</th><th>Calculated / capacity</th><th></th></tr></thead><tbody>${fuelRows}</tbody></table></div></section><section class="panel" style="margin-top:15px"><div class="panel-head"><div><h2>Suppliers</h2><p>Configured delivery suppliers</p></div><button class="button secondary" data-action="add-supplier">+ Add supplier</button></div><div style="display:flex;gap:7px;flex-wrap:wrap">${suppliers}</div></section>${backupControl}${users}`;
+}
+function createUser(){
+  const stationOptions=(state.stations||[]).filter(s=>s.active).map(s=>`<option value="${esc(s.id)}" ${s.id===selectedStationId?'selected':''}>${esc(s.name)}</option>`).join('');
+  openModal('Create user account',`<div class="form-grid">${field('Full name','name')}${field('Email address','email',{type:'email'})}${field('Role','role',{type:'select',options:['System Administrator','Station Manager','Supervisor','Cashier','Fuel Attendant','Accountant'].map(x=>`<option>${x}</option>`).join('')})}${field('Service station','stationId',{type:'select',options:`<option value="">All stations (system administrator)</option>${stationOptions}`,hint:'System administrators can access every station. Other roles are assigned to one station.'})}${field('Temporary password','password',{type:'password',hint:'At least 12 characters.'})}</div>`,'Create account',d=>postAction({type:'user',name:d.get('name'),email:d.get('email'),role:d.get('role'),stationId:d.get('stationId'),password:d.get('password')}));
+}
+function createStation(){openModal('Add service station',`<div class="form-grid">${field('Service station name','name')}${field('Currency code','currency',{value:state.settings.currency||'USD',hint:'Use a three-letter currency code, for example USD.'})}${field('Tank variance tolerance (L)','tolerance',{type:'number',value:150,min:'0',step:'1'})}</div><div class="section-note">A new station starts with empty fuel stock. Add its staff accounts, then record and approve its first fuel delivery.</div>`,'Add station',d=>postAction({type:'station',name:d.get('name'),currency:d.get('currency'),tolerance:Number(d.get('tolerance'))}));}
+document.addEventListener('change',async e=>{if(e.target.id==='station-picker'){selectedStationId=e.target.value;sessionStorage.setItem('mututsva-station-id',selectedStationId);try{const out=await api('/api/state');acceptState(out.state)}catch(error){notify(error.message)}}});
+document.addEventListener('click',e=>{const action=e.target.closest('[data-action="new-station"]');if(action&&currentUser?.role==='System Administrator')createStation()});
